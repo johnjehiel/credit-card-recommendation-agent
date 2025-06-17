@@ -1,0 +1,6 @@
+.gradio
+.env
+codebase/
+data/
+venv/
+**/__pycache__/
