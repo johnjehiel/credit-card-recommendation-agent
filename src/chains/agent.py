@@ -1,6 +1,7 @@
 import os
+from dotenv import load_dotenv
 from langchain.agents import initialize_agent, AgentType
-from langchain.tools import Tool  # Add this import
+from langchain.tools import Tool
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -8,7 +9,12 @@ from typing import List, Dict, Any
 
 from src.tools.neo4j_tool import Neo4jRetrievalTool
 from src.chains.retrieval_chain import retrieve_ranked_cards
-from dotenv import load_dotenv
+from src.chains.intent_classification import (
+    classify_query_intent, 
+    find_fd_intent, 
+    find_specific_card, 
+    generate_card_specific_response
+)
 
 load_dotenv()
 
@@ -28,8 +34,53 @@ memory = ConversationBufferMemory(
 )
 
 # Wrapper function for Gradio to call
-def run_agent_pipeline(query: str, query_intent: bool = False, include_cobranded: bool = True):
-    """Run the agent pipeline to get credit card recommendations."""
+def run_agent_pipeline(query: str, query_intent_manual: bool = False, include_cobranded: bool = True,
+                      use_eligibility: bool = False, min_income: float = 5.0, min_cibil: int = 750, 
+                      age: int = 25, min_joining_fee: int = 0, max_joining_fee: int = 100000,
+                      min_annual_fee: int = 0, max_annual_fee: int = 100000):
+    """
+    Run the agent pipeline to get credit card recommendations.
+    
+    Parameters:
+    - query: User's question about credit cards
+    - query_intent_manual: Manual override for FD card intent (beginners/students)
+    - include_cobranded: Whether to include co-branded cards
+    - use_eligibility: Whether to apply eligibility filtering
+    - min_income: Minimum income (LPA)
+    - min_cibil: Minimum CIBIL score
+    - age: User's age
+    - min_joining_fee/max_joining_fee: Range for joining fee
+    - min_annual_fee/max_annual_fee: Range for annual fee
+    """
+    # Step 1: Auto-detect query intent (specific card, general retrieve, or no-retrieval)
+    intent_result = classify_query_intent(query)
+    intent_type = intent_result.get("intent", "retrieve")
+    print(f"Detected intent: {intent_type}")
+    
+    # Step 2: Handle specific card requests
+    if intent_type == "specific":
+        # Find the specific card mentioned
+        card_name = intent_result.get("card_name")
+        card = None
+        
+        if card_name:
+            card = find_specific_card(query)
+        
+        if card:
+            # Generate specific response about this card
+            response = generate_card_specific_response(query, card)
+            return response
+    
+    # Step 3: Handle no-retrieval (general financial questions)
+    if intent_type == "no_retrieval":
+        response = intent_result.get("response")
+        if response:
+            return response
+    
+    # Step 4: For retrieval intents, prepare tools and detect FD card intent
+    # Auto-detect if the query is about FD cards (for beginners/students)
+    query_intent = query_intent_manual or find_fd_intent(query)
+    print(f"FD Card intent: {query_intent}")
     
     # Initialize tools
     neo4j_tool = Neo4jRetrievalTool()
@@ -73,13 +124,40 @@ def run_agent_pipeline(query: str, query_intent: bool = False, include_cobranded
         handle_parsing_errors=True,
         agent_kwargs={"system_message": system_prompt}
     )
+      # Process combined input with eligibility info if applicable
+    eligibility_info = ""
+    if use_eligibility:
+        eligibility_info = f"""
+        Eligibility filters applied:
+        - Minimum Income: {min_income} LPA
+        - Minimum CIBIL Score: {min_cibil}
+        - Age: {age}
+        - Joining Fee Range: ₹{min_joining_fee} - ₹{max_joining_fee}
+        - Annual Fee Range: ₹{min_annual_fee} - ₹{max_annual_fee}
+        """
     
-    # Process combined input
-    combined_input = f"User query: {query}"
+    intent_info = ""
+    if query_intent:
+        intent_info = "\nThis query is for a first-time credit card user or student with limited credit history."
+    
+    cobranded_info = ""
+    if not include_cobranded:
+        cobranded_info = "\nExclude co-branded cards (airline, retail, etc.)"
+    
+    combined_input = f"User query: {query}{intent_info}{cobranded_info}\n{eligibility_info}"
+    
     result = agent_executor.invoke({
         "input": combined_input,  # This is the key that memory will use
         "query_intent": query_intent,
-        "include_cobranded": include_cobranded
+        "include_cobranded": include_cobranded,
+        "use_eligibility": use_eligibility,
+        "min_income": min_income,
+        "min_cibil": min_cibil,
+        "age": age,
+        "min_joining_fee": min_joining_fee,
+        "max_joining_fee": max_joining_fee,
+        "min_annual_fee": min_annual_fee,
+        "max_annual_fee": max_annual_fee
     })
     
     return result["output"]

@@ -98,8 +98,91 @@ def rerank_cards(query: str, cards: list, top_n: int = 5):
 
 
 # Unified retrieval call
+def enhance_query(user_query: str) -> str:
+    """
+    Enhance the user query to make it more suitable for retrieval.
+    """
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    
+    prompt = f"""
+        You are an AI assistant that refines user queries to make them optimized for credit card search and retrieval.
+        
+        User Query: "{user_query}"
+        
+        Your task is to rewrite this query to:
+        1. Make it more direct and specific for credit card search
+        2. Include all relevant features and requirements
+        3. Add any implied criteria that would be helpful for retrieval
+        4. Maintain the original intent and purpose
+        
+        Respond with ONLY the rewritten query - no explanations or additional text.
+    """
+    
+    response = model.generate_content(prompt)
+    enhanced_query = response.text.strip()
+    
+    # Remove quotation marks if present
+    if enhanced_query.startswith('"') and enhanced_query.endswith('"'):
+        enhanced_query = enhanced_query[1:-1]
+    
+    print(f"Enhanced query: {enhanced_query}")
+    return enhanced_query
 
-def retrieve_ranked_cards(query):
-    candidates = retrieve_from_faiss(query)
-    top_cards = rerank_cards(query, candidates, top_n=5)
+
+def generate_multi_queries(direct_query: str, n: int = 3) -> list:
+    """
+    Generate multiple focused subqueries from a user query for better coverage.
+    """
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    
+    prompt = f"""
+    The following is a detailed credit card search query:
+    "{direct_query}"
+    
+    Generate {n} distinct subqueries that collectively cover all the important features from the original query.
+    Each subquery should emphasize a different combination of the features (e.g., lounge access, travel insurance, low foreign transaction fees, hotel discounts, etc.).
+    
+    Make sure all features from the original query are represented across the {n} queries.
+    Output only the subqueries, one per line. Do not include any explanations, numbering, or formatting.
+    """
+    
+    response = model.generate_content(prompt)
+    queries = [q.strip() for q in response.text.strip().split('\n') if q.strip()]
+    
+    print(f"Generated sub-queries: {queries}")
+    return queries
+
+def retrieve_ranked_cards(query, top_n=5):
+    """
+    Enhanced retrieval pipeline:
+    1. Enhance the query for better search
+    2. Generate multiple subqueries for broader coverage
+    3. Retrieve candidates from each query
+    4. Rerank using cross-encoder
+    """
+    # Step 1: Enhance the original query
+    enhanced_query = enhance_query(query)
+    
+    # Step 2: Generate multiple queries for better coverage
+    multi_queries = generate_multi_queries(enhanced_query)
+    all_queries = [enhanced_query] + multi_queries
+    
+    # Step 3: Collect results from all queries
+    all_candidates = []
+    for sub_query in all_queries:
+        candidates = retrieve_from_faiss(sub_query)
+        all_candidates.extend(candidates)
+    
+    # Step 4: Remove duplicates
+    seen = set()
+    unique_candidates = []
+    for card in all_candidates:
+        if card["name"] not in seen:
+            seen.add(card["name"])
+            unique_candidates.append(card)
+    
+    # Step 5: Final reranking with cross-encoder
+    top_cards = rerank_cards(enhanced_query, unique_candidates, top_n=top_n)
     return top_cards

@@ -13,40 +13,127 @@ with gr.Blocks(title="Agentic Credit Card Recommender") as demo:
     """)
 
     with gr.Row():
-        query_input = gr.Textbox(label="What kind of card are you looking for?", placeholder="e.g. Best cards for online shopping with fuel benefits")
-        fd_checkbox = gr.Checkbox(label="Are you a beginner / student (FD card)?", value=False)
-        cobrand_checkbox = gr.Checkbox(label="Include Co-branded Cards", value=True)
+        query_input = gr.Textbox(
+            label="What kind of card are you looking for?", 
+            placeholder="e.g. Best cards for online shopping with fuel benefits"
+        )
+        fd_checkbox = gr.Checkbox(
+            label="Are you a beginner / student (FD card)?", 
+            value=False
+        )
+        cobrand_checkbox = gr.Checkbox(
+            label="Include Co-branded Cards", 
+            value=True
+        )
+
+    # Add eligibility filtering section in an expandable accordion
+    with gr.Accordion("Eligibility Filters", open=False):
+        use_eligibility = gr.Checkbox(
+            label="Apply Eligibility Filtering", 
+            value=False
+        )
+        
+        with gr.Row():
+            income_input = gr.Number(
+                label="Income (LPA)", 
+                value=5, 
+                minimum=0
+            )
+            cibil_input = gr.Number(
+                label="CIBIL Score", 
+                value=750, 
+                minimum=300, 
+                maximum=900
+            )
+            age_input = gr.Number(
+                label="Age", 
+                value=25, 
+                minimum=18, 
+                maximum=80
+            )
+        
+        with gr.Row():
+            min_joining_fee = gr.Number(
+                label="Min Joining Fee (₹)", 
+                value=0, 
+                minimum=0
+            )
+            max_joining_fee = gr.Number(
+                label="Max Joining Fee (₹)", 
+                value=10000, 
+                minimum=0
+            )
+        
+        with gr.Row():
+            min_annual_fee = gr.Number(
+                label="Min Annual Fee (₹)", 
+                value=0, 
+                minimum=0
+            )
+            max_annual_fee = gr.Number(
+                label="Max Annual Fee (₹)", 
+                value=10000, 
+                minimum=0
+            )
 
     run_button = gr.Button("🔍 Get Recommendations")
     output = gr.Textbox(lines=15, label="Recommendations", interactive=False)
 
     with gr.Accordion("Ask Follow-up Questions", open=False):
-        chatbox = gr.Chatbot(type="messages")  # Changed to use messages format
+        chatbox = gr.Chatbot(type="messages")
         followup_input = gr.Textbox(label="Your follow-up question")
         followup_submit = gr.Button("Submit")
 
     # Wrapper logic
-    def recommend(query, fd_intent, include_cobranded):
+    def recommend(query, fd_intent, include_cobranded, use_eligibility=False, 
+                 income=5, cibil=750, age=25, 
+                 min_joining_fee=0, max_joining_fee=100000,
+                 min_annual_fee=0, max_annual_fee=100000):
         global chat_history
         chat_history = []  # Clear chat history
-        result = run_agent_pipeline(query, fd_intent, include_cobranded)
+        
+        result = run_agent_pipeline(
+            query=query, 
+            query_intent_manual=fd_intent, 
+            include_cobranded=include_cobranded,
+            use_eligibility=use_eligibility,
+            min_income=income,
+            min_cibil=cibil,
+            age=age,
+            min_joining_fee=min_joining_fee,
+            max_joining_fee=max_joining_fee,
+            min_annual_fee=min_annual_fee,
+            max_annual_fee=max_annual_fee
+        )
+        
         chat_history.append({"role": "user", "content": query})
         chat_history.append({"role": "assistant", "content": result})
+        
         return result, chat_history
 
     def continue_chat(message):
         global chat_history
-        context = "\n".join([f"User: {m['content']}" if m['role'] == 'user' else f"Bot: {m['content']}" for m in chat_history])
+        context = "\n".join([
+            f"User: {m['content']}" if m['role'] == 'user' else f"Bot: {m['content']}" 
+            for m in chat_history
+        ])
         full_message = f"{context}\nUser: {message}\nBot:"
+        
         from src.chains.agent import gemini_llm
         response = gemini_llm.invoke(full_message)
+        
         chat_history.append({"role": "user", "content": message})
         chat_history.append({"role": "assistant", "content": response.content})
+        
         return chat_history
 
     run_button.click(
         fn=recommend,
-        inputs=[query_input, fd_checkbox, cobrand_checkbox],
+        inputs=[
+            query_input, fd_checkbox, cobrand_checkbox,
+            use_eligibility, income_input, cibil_input, age_input,
+            min_joining_fee, max_joining_fee, min_annual_fee, max_annual_fee
+        ],
         outputs=[output, chatbox]
     )
 
@@ -55,7 +142,7 @@ with gr.Blocks(title="Agentic Credit Card Recommender") as demo:
         inputs=[followup_input],
         outputs=[chatbox]
     )
-
+    
     followup_input.submit(
         fn=continue_chat,
         inputs=[followup_input],
